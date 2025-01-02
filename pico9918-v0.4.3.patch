@@ -1,0 +1,259 @@
+diff -rub pico9918.ORG/CMakeLists.txt pico9918/CMakeLists.txt
+--- pico9918.ORG/CMakeLists.txt	2024-12-28 00:00:00.000000000 +0900
++++ pico9918/CMakeLists.txt	2024-12-28 00:00:00.000000000 +0900
+@@ -24,8 +24,10 @@
+ endif()
+ # ====================================================================================
+ 
+-set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/src/boards )
+-set(PICO_BOARD "pico9918_v04" CACHE STRING "Board type")
++#set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/src/boards )
++#set(PICO_BOARD "pico9918_v04" CACHE STRING "Board type")
++set(PICO_PLATFORM rp2040)
++set(PICO_BOARD pico)
+ 
+ # Pull in Raspberry Pi Pico SDK (must be before project)
+ include(pico_sdk_import.cmake)
+@@ -38,6 +40,10 @@
+ add_definitions(-DPICO_BUILD=1)
+ add_definitions(-DVR_EMU_TMS9918_SINGLE_INSTANCE=1)
+ 
++#add_compile_options(-include pico/platform/compiler.h)
++#add_compile_options("SHELL:-isystem ${PICO_SDK_PATH}/src/rp2_common/pico_runtime/include")
++#add_compile_options("SHELL:-isystem ${PICO_SDK_PATH}/src/rp2_common/pico_runtime_init/include")
++
+ # Initialise the Raspberry Pi Pico SDK
+ pico_sdk_init()
+ 
+diff -rub pico9918.ORG/src/main.c pico9918/src/main.c
+--- pico9918.ORG/src/main.c	2024-12-28 00:00:00.000000000 +0900
++++ pico9918/src/main.c	2024-12-28 00:00:00.000000000 +0900
+@@ -112,6 +112,7 @@
+ #define TMS_PIO pio1
+ #define TMS_IRQ PIO1_IRQ_0
+ 
++#if 0
+ bi_decl(bi_1pin_with_name(GPIO_GROMCL, "GROM Clock"));
+ bi_decl(bi_1pin_with_name(GPIO_CPUCL, "CPU Clock"));
+ bi_decl(bi_pin_mask_with_names(GPIO_CD_MASK, "CPU Data (CD7 - CD0)"));
+@@ -119,6 +120,7 @@
+ bi_decl(bi_1pin_with_name(GPIO_CSW, "Write"));
+ bi_decl(bi_1pin_with_name(GPIO_MODE, "Mode"));
+ bi_decl(bi_1pin_with_name(GPIO_INT, "Interrupt"));
++#endif
+ 
+ 
+ /* file globals */
+@@ -148,6 +150,7 @@
+  */
+ void  __not_in_flash_func(pio_irq_handler)()
+ {
++#if 0
+ 
+   if ((TMS_PIO->fstat & (1u << (PIO_FSTAT_RXEMPTY_LSB + tmsWriteSm))) == 0) // write?
+   {
+@@ -185,6 +188,15 @@
+     }
+     updateTmsReadAhead();
+   }
++#else
++  uint32_t writeVal = TMS_PIO->rxf[tmsWriteSm];
++
++  if ((uint8_t)writeVal == 0x98) { // write data
++    vrEmuTms9918WriteDataImpl(writeVal >> 8);
++  } else if ((uint8_t)writeVal == 0x99) { // write reg/addr
++    vrEmuTms9918WriteAddrImpl(writeVal >> 8);
++  }
++#endif
+ }
+ 
+ 
+@@ -288,6 +300,7 @@
+   /* generate the scanline */
+   uint8_t tempStatus = vrEmuTms9918ScanLine(y, tmsScanlineBuffer);
+ 
++#if 0
+   /*** interrupt signal? ***/
+   if (y == TMS9918_PIXELS_Y - 1)
+   {
+@@ -306,6 +319,7 @@
+     gpio_put(GPIO_INT, !currentInt);
+   }
+   enableTmsPioInterrupts();
++#endif
+ 
+   /*** left border ***/
+   for (int x = 0; x < hBorder; ++x)
+@@ -374,6 +388,7 @@
+  */
+ void tmsPioInit()
+ {
++#if 0
+   irq_set_exclusive_handler(TMS_IRQ, pio_irq_handler);
+   irq_set_enabled(TMS_IRQ, true);
+ 
+@@ -408,6 +423,26 @@
+   pio_set_irq0_source_enabled(TMS_PIO, pis_sm1_rx_fifo_not_empty, true);
+ 
+   pio_sm_put(TMS_PIO, tmsReadSm, 0x000000ff);
++#else
++  irq_set_exclusive_handler(TMS_IRQ, pio_irq_handler);
++  irq_set_enabled(TMS_IRQ, true);
++
++  uint tmsWriteProgram = pio_add_program(TMS_PIO, &tmsWrite_program);
++  pio_sm_config writeConfig = tmsWrite_program_get_default_config(tmsWriteProgram);
++  sm_config_set_in_pins(&writeConfig, 2);
++  sm_config_set_jmp_pin(&writeConfig, 0);
++  sm_config_set_in_shift(&writeConfig, false, true, 16);
++  sm_config_set_clkdiv(&writeConfig, 1.0f);
++
++  for (uint i = 0 ; i <= 17 ; i++) {
++    gpio_disable_pulls(i);
++    pio_gpio_init(TMS_PIO, i);
++  }
++
++  pio_sm_init(TMS_PIO, tmsWriteSm, tmsWriteProgram, &writeConfig);
++  pio_sm_set_enabled(TMS_PIO, tmsWriteSm, true);
++  pio_set_irq0_source_enabled(TMS_PIO, pis_sm0_rx_fifo_not_empty, true);
++#endif
+ }
+ 
+ 
+@@ -416,16 +451,20 @@
+  */
+ void proc1Entry()
+ {
++#if 0
+   // set up gpio pins
+   gpio_init_mask(GPIO_CD_MASK | GPIO_CSR_MASK | GPIO_CSW_MASK | GPIO_MODE_MASK | GPIO_INT_MASK);
+   gpio_put_all(GPIO_INT_MASK);
+   gpio_set_dir_all_bits(GPIO_INT_MASK); // int is an output
++#endif
+ 
+   tmsPioInit();
+ 
++#if 0
+   // set up the GROMCLK and CPUCLK signals
+   initClock(GPIO_GROMCL, TMS_CRYSTAL_FREQ_HZ / 24.0f);
+   initClock(GPIO_CPUCL, TMS_CRYSTAL_FREQ_HZ / 3.0f);
++#endif
+ 
+   // wait until everything else is ready, then run the vga loop
+   multicore_fifo_pop_blocking();
+diff -rub pico9918.ORG/src/palette.c pico9918/src/palette.c
+--- pico9918.ORG/src/palette.c	2024-12-28 00:00:00.000000000 +0900
++++ pico9918/src/palette.c	2024-12-28 00:00:00.000000000 +0900
+@@ -33,8 +33,10 @@
+ #define RFROMRGBA(rgba) ((rgba >> 24) & 0xff)
+ #define GFROMRGBA(rgba) ((rgba >> 16) & 0xff)
+ #define BFROMRGBA(rgba) ((rgba >> 8) & 0xff)
+-#define C4FROMC8(c4) ((uint16_t)(c4 / 16.0f) & 0x0f)
+-#define BGR12FROMRGB(r, g, b) ((C4FROMC8(b) << 8) | (C4FROMC8(g) << 4) | C4FROMC8(r))
++//#define C4FROMC8(c4) ((uint16_t)(c4 / 16.0f) & 0x0f)
++//#define BGR12FROMRGB(r, g, b) ((C4FROMC8(b) << 8) | (C4FROMC8(g) << 4) | C4FROMC8(r))
++#define C4FROMC8(c4) ((uint16_t)((c4 * 7./255.) + .5))
++#define BGR12FROMRGB(r, g, b) ((C4FROMC8(b) << 6) | (C4FROMC8(g) << 3) | C4FROMC8(r))
+ #define BGR12FROMRGBA32(rgba32) (BGR12FROMRGB(RFROMRGBA(rgba32), GFROMRGBA(rgba32), BFROMRGBA(rgba32)))
+ 
+  /* palette of 12-bit BGR values generated from above 32-bit RGBA values
+diff -rub pico9918.ORG/src/tms9918.pio pico9918/src/tms9918.pio
+--- pico9918.ORG/src/tms9918.pio	2024-12-28 00:00:00.000000000 +0900
++++ pico9918/src/tms9918.pio	2024-12-28 00:00:00.000000000 +0900
+@@ -69,6 +69,7 @@
+ ;              | |e|t|d|    |        |
+ ;              | | |e| |    |        |
+ 
++/*
+ .program tmsWrite
+ .define public CSW_PIN 27
+ 
+@@ -76,3 +77,13 @@
+   in pins, 16                ; grab the data CD0-7 and auto-push
+   wait 1 gpio CSW_PIN [12]   ; wait for CSW high (inactive)
+ .wrap
++*/
++
++.program tmsWrite
++  mov isr, null
++.wrap_target
++  wait 0 gpio 1
++  jmp pin 1
++  in pins, 16
++  wait 1 gpio 1
++.wrap
+diff -rub pico9918.ORG/src/vga/vga.c pico9918/src/vga/vga.c
+--- pico9918.ORG/src/vga/vga.c	2024-12-28 00:00:00.000000000 +0900
++++ pico9918/src/vga/vga.c	2024-12-28 00:00:00.000000000 +0900
+@@ -49,11 +49,11 @@
+ }
+ 
+ 
+-#define SYNC_PINS_START 0        // first sync pin gpio number
++#define SYNC_PINS_START 28       // first sync pin gpio number
+ #define SYNC_PINS_COUNT 2        // number of sync pins (h and v)
+ 
+-#define RGB_PINS_START  2        // first rgb pin gpio number
+-#define RGB_PINS_COUNT 12        // number of rgb pins
++#define RGB_PINS_START 19        // first rgb pin gpio number
++#define RGB_PINS_COUNT 9         // number of rgb pins
+ 
+ #define VGA_PIO         pio0_hw  // which pio are we using for vga?
+ #define SYNC_SM         0        // vga sync state machine index
+@@ -62,6 +62,7 @@
+ #define END_OF_SCANLINE_MSG 0x40000000
+ #define END_OF_FRAME_MSG    0x80000000
+ 
++#if 0
+ #if VGA_COMBINE_SYNC
+ bi_decl(bi_1pin_with_name(SYNC_PINS_START, "C Sync"));
+ bi_decl(bi_1pin_with_name(SYNC_PINS_START + 1, "C Sync"));
+@@ -73,6 +74,7 @@
+ bi_decl(bi_pin_mask_with_names(0xf << RGB_PINS_START, "Red (LSB - MSB)"));
+ bi_decl(bi_pin_mask_with_names(0xf << RGB_PINS_START + 4, "Green (LSB - MSB)"));
+ bi_decl(bi_pin_mask_with_names(0xf << RGB_PINS_START + 8, "Blue (LSB - MSB)"));
++#endif
+ 
+ /*
+  * sync pio dma data buffers
+@@ -347,7 +349,8 @@
+     {
+       for (int i = 0; i < 5; ++i)
+       {
+-        currentBuffer[i] = (currentBuffer[i] >> 1) & 0x07770777;
++        //currentBuffer[i] = (currentBuffer[i] >> 1) & 0x07770777;
++        currentBuffer[i] = (currentBuffer[i] >> 1) & 0x00db00db;
+       }
+     }
+ #endif
+@@ -373,7 +376,8 @@
+       int end = VIRTUAL_PIXELS_X / 2;
+       for (int i = 5; i < end; ++i)
+       {
+-        currentBuffer[i] = (currentBuffer[i] >> 1) & 0x07770777;
++        //currentBuffer[i] = (currentBuffer[i] >> 1) & 0x07770777;
++        currentBuffer[i] = (currentBuffer[i] >> 1) & 0x00db00db;
+       }
+     }
+ #endif
+diff -rub pico9918.ORG/tools/img2carray.py pico9918/tools/img2carray.py
+--- pico9918.ORG/tools/img2carray.py	2024-12-28 00:00:00.000000000 +0900
++++ pico9918/tools/img2carray.py	2024-12-28 00:00:00.000000000 +0900
+@@ -128,10 +128,14 @@
+     """
+     encode the 8-bit r, g, b, a values into a single 16-bit 0xabgr hex string
+     """
+-    c = (int(int(a) / 16) & 0xf) << 12
+-    c |= (int(int(b) / 16) & 0xf) << 8
+-    c |= (int(int(g) / 16) & 0xf) << 4
+-    c |= (int(int(r) / 16) & 0xf)
++#    c = (int(int(a) / 16) & 0xf) << 12
++#    c |= (int(int(b) / 16) & 0xf) << 8
++#    c |= (int(int(g) / 16) & 0xf) << 4
++#    c |= (int(int(r) / 16) & 0xf)
++    c = (int(int(a) / 32) & 0x7) << 9
++    c |= (int(int(b) / 32) & 0x7) << 6
++    c |= (int(int(g) / 32) & 0x7) << 3
++    c |= (int(int(r) / 32) & 0x7)
+     return "{0:#0{1}x}".format(c, 6)
+ 
+ 
